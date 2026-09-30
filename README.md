@@ -1,20 +1,22 @@
 # apple-vision-api
 
-An OpenAI-compatible HTTP server that exposes Apple's on-device Foundation Models
-(Apple Intelligence) with image understanding — running entirely on your Mac, with
-zero cloud dependency.
+An OpenAI-compatible HTTP server for Apple's on-device Foundation Model (Apple
+Intelligence), **with image input**, running entirely on your Mac with no cloud dependency.
+
+> Not to be confused with Apple's *Vision* framework (OCR, face and barcode detection).
+> This server sends your images and prompts to Apple's on-device language model.
 
 ```
 you / any app  ──HTTP──▶  apple-vision-api (this)  ──▶  FoundationModels framework
                                                         (on-device, ~3B params, Apple Silicon)
 ```
 
-Built in Swift using only Apple frameworks (`FoundationModels`, `Network`,
-`ImageIO`) — no third-party dependencies, no servers to install, one ~200-line file.
+Built in Swift using only Apple frameworks (`FoundationModels`, `Network`, `ImageIO`).
+No third-party dependencies and nothing else to install.
 
 ## What it is (and isn't)
 
-This is **not** a vision model. It wraps Apple's on-device **Foundation Model** — a
+This is **not** a vision model. It wraps Apple's on-device **Foundation Model**, a
 ~3B-parameter general-purpose LLM that accepts images as attachments. Apple itself
 describes this model as *"optimized for specific tasks like summarization, extraction,
 and classification, and is not suitable for world knowledge or advanced reasoning."*
@@ -41,18 +43,19 @@ details, and confidently describe the wrong thing), multi-image reasoning, math 
 other reasoning tasks, long-form generation, world knowledge. In our testing it
 described a photo of four hikers in the Alps as "a young woman in front of a
 colorful wall" and got 27 × 43 wrong. If your task needs real visual reasoning,
-use a proper vision model (Qwen-VL, GPT, Gemini, …) — this is the cheap fast lane,
+use a proper vision model (Qwen-VL, GPT, Gemini, …): this is the cheap fast lane,
 not the deep lane.
 
 ## Requirements
 
-- macOS 26 or later (developed and tested on macOS 27)
+- macOS 27 or later
 - An Apple Silicon Mac with **Apple Intelligence enabled**
   (System Settings → Apple Intelligence & Siri → on)
-- Xcode / Command Line Tools with Swift 6.x
+- Xcode 27 / Swift 6.4
 
-> The `FoundationModels` framework only initializes when Apple Intelligence is
-> enabled on the machine. Without it the server runs but requests will fail.
+If Apple Intelligence is off or the model is still downloading, the server starts
+anyway: `/health` returns `503` with the reason, and chat requests return `503`
+until it's ready.
 
 ## Build & run
 
@@ -60,30 +63,70 @@ not the deep lane.
 git clone https://github.com/Jacou/apple-vision-api
 cd apple-vision-api
 swift build -c release
-
-# run it (port is the first CLI argument, default 8099)
-./.build/release/apple_vision_api 8099
+./.build/release/apple_vision_api            # http://127.0.0.1:8099, this Mac only
 ```
 
-The server binds `0.0.0.0:<port>`. It's single-purpose: no auth, no TLS —
-run it on a trusted network only.
+### Options
 
-### Endpoints
+```
+--host <address>       address to listen on (default 127.0.0.1, this Mac only;
+                       use 0.0.0.0 to accept connections from your network)
+--port <number>        port to listen on (default 8099; a bare number also works)
+--api-key <key>        require "Authorization: Bearer <key>" on /v1 endpoints
+                       (or set APPLE_VISION_API_KEY)
+--allow-local-files    accept image_url file paths, from clients on this Mac only
+--max-body-mb <n>      largest accepted request body, in MB (default 25)
+```
+
+To serve other machines on your network, set a key:
+
+```sh
+APPLE_VISION_API_KEY=$(openssl rand -hex 24) ./.build/release/apple_vision_api --host 0.0.0.0
+```
+
+## Security
+
+- **Listens on 127.0.0.1 by default.** Use `--host 0.0.0.0` to open it to your
+  network, and set an API key when you do. The server warns at startup if you don't.
+- **API key.** With `--api-key`, `/v1/*` requires `Authorization: Bearer <key>`.
+  `/health` stays open for monitoring. The key is compared in constant time.
+- **No local file access by default.** Image file paths are refused unless you pass
+  `--allow-local-files`, and even then only for clients connecting from the same Mac.
+  Otherwise anyone who can reach the port could make the server read and transcribe
+  images on its disk.
+- **Bounded requests.** Bodies over `--max-body-mb` get `413`, invalid lengths `400`,
+  oversized headers `431`, clients that don't finish sending within 60 s `408`, and
+  more than 32 simultaneous connections `503`.
+- **No TLS.** Put it behind a reverse proxy if traffic leaves a trusted network.
+
+## Endpoints
 
 | Endpoint | Method | Description |
 |---|---|---|
-| `/v1/chat/completions` | POST | OpenAI-compatible chat (text + image) |
+| `/v1/chat/completions` | POST | OpenAI-compatible chat (text + image), streaming or not |
 | `/v1/models` | GET | Lists `apple-foundation-vision` |
-| `/health` | GET | Liveness check |
+| `/health` | GET | `200` when the model is ready, `503` with the reason when it isn't |
 
-### Images
+`/chat/completions` and `/models` without the `/v1` prefix work too.
 
-Images are supplied the standard OpenAI way, in two flavors:
+### Supported request fields
 
-- **Data URI** (works from any machine on your network):
-  `"url": "data:image/jpeg;base64,/<base64>"`
-- **Local file path** (works from the same Mac that runs the server):
-  `"url": "/Users/you/photo.jpg"`
+| Field | Support |
+|---|---|
+| `messages` | `system`/`developer` messages become the model's instructions. `user`, `assistant` and `tool` turns are replayed as a short transcript before the latest user message, since each request starts a fresh on-device session. |
+| Image parts | `image_url` with a base64 `data:` URI (JPEG, PNG, HEIC, GIF, TIFF, WebP). The latest image in the conversation is used. Remote `http(s)` URLs are not fetched. |
+| `stream` | Server-Sent Events in OpenAI's chunk format, ending with `data: [DONE]`. `stream_options.include_usage` adds a final usage chunk. |
+| `temperature` | Passed to the model (0–2). |
+| `max_tokens` / `max_completion_tokens` | Passed to the model as the response token limit. |
+| `n` | Only `1`. |
+| Tools, `response_format`, logprobs | Not supported. |
+
+Responses include real token counts in `usage`, as reported by the framework.
+
+Errors use OpenAI's format (`{"error": {"message", "type", "code", "param"}}`) with
+meaningful statuses: `400` for invalid requests, context overflow or content blocked
+by Apple's guardrails, `401` for a missing or wrong key, `403` for disabled file paths,
+`429` when the model is busy, and `503` when it's unavailable.
 
 ## Usage examples
 
@@ -109,32 +152,34 @@ curl http://127.0.0.1:8099/v1/chat/completions \
        ]}]}"
 ```
 
-From any OpenAI SDK (e.g. Python):
+From any OpenAI SDK (e.g. Python), including streaming:
 
 ```python
 from openai import OpenAI
 
-client = OpenAI(base_url="http://192.168.1.76:8099/v1", api_key="unused")
+client = OpenAI(base_url="http://192.168.1.76:8099/v1", api_key="your-key")
 
-resp = client.chat.completions.create(
+stream = client.chat.completions.create(
     model="apple-foundation-vision",
-    messages=[{
-        "role": "user",
-        "content": [
+    stream=True,
+    messages=[
+        {"role": "system", "content": "Answer in one short sentence."},
+        {"role": "user", "content": [
             {"type": "text", "text": "What is shown in this image?"},
-            {"type": "image_url",
-             "image_url": {"url": "data:image/jpeg;base64," + b64}},
-        ],
-    }],
+            {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64," + b64}},
+        ]},
+    ],
 )
-print(resp.choices[0].message.content)
+for chunk in stream:
+    if chunk.choices:
+        print(chunk.choices[0].delta.content or "", end="")
 ```
 
 ## Run it as a launchd service
 
 `examples/com.example.apple-vision-api.plist` is a template. Copy it to
 `~/Library/LaunchAgents/`, point the binary path and log files at your install,
-then:
+set your API key, then:
 
 ```sh
 launchctl load ~/Library/LaunchAgents/com.example.apple-vision-api.plist
@@ -143,27 +188,25 @@ launchctl list | grep apple-vision-api   # verify
 
 `KeepAlive` restarts it if it ever dies; `RunAtLoad` starts it at login.
 
-## Design notes
+## Development
 
-- **One file, no dependencies.** The HTTP layer is a small hand-rolled parser on
-  `Network.framework` (`NWListener`/`NWConnection`) — chosen deliberately so the
-  package has zero external deps and compiles in seconds.
-- **Stateful per connection.** Each connection keeps a small request buffer
-  (`ConnState`) until headers + body are complete, then dispatches.
-- **Images are single.** The latest `image_url` in the conversation is used;
-  earlier ones are ignored.
-- **Usage fields are zeroed.** Token accounting isn't exposed by the framework,
-  so `usage` is reported as 0 — don't bill against it.
+```sh
+swift build
+swift test
+```
+
+The HTTP parsing, OpenAI request/response handling and routing live in the
+`AppleVisionAPICore` library, which doesn't depend on `FoundationModels`; the tests
+run it against a fake model, so they pass on Macs without Apple Intelligence.
+The `apple_vision_api` executable adds the network listener and the real model.
 
 ## Limitations
 
-- Single image per request; no video, no multi-image context.
-- No streaming (SSE) — responses are returned whole.
-- No authentication or TLS (trusted-network use only).
-- `temperature`, `top_p`, and other sampling params are accepted but ignored.
-- Concurrency: requests are handled in parallel tasks, but the on-device model is
-  the bottleneck — don't hammer it.
+- Single image per request (the latest one); no video, no multi-image context.
+- The on-device model is small (see "Set your expectations").
+- Conversation history is replayed as text, so long conversations hit the model's
+  context window sooner than you might expect (you get a `400` when they do).
 
 ## License
 
-[MIT](LICENSE) — do whatever you want, no warranty.
+[MIT](LICENSE): do whatever you want, no warranty.

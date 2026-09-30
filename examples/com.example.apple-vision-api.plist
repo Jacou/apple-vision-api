@@ -3,8 +3,10 @@
 <!--
   Template launchd agent for apple-vision-api.
   1. Replace the binary path with your built binary (.build/release/apple_vision_api)
-  2. Adjust log paths as you like
-  3. Copy to ~/Library/LaunchAgents/ and:
+  2. To serve only this Mac, remove the two host lines and the API key.
+     To serve your network, keep them and set a long random key (e.g. `openssl rand -hex 24`).
+  3. Adjust log paths as you like
+  4. Copy to ~/Library/LaunchAgents/ and:
        launchctl load ~/Library/LaunchAgents/com.example.apple-vision-api.plist
 -->
 <plist version="1.0">
@@ -13,8 +15,15 @@
   <key>ProgramArguments</key>
   <array>
     <string>/path/to/your/repo/.build/release/apple_vision_api</string>
+    <string>--port</string>
     <string>8099</string>
+    <string>--host</string>
+    <string>0.0.0.0</string>
   </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>APPLE_VISION_API_KEY</key><string>replace-with-a-long-random-key</string>
+  </dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
   <key>StandardOutPath</key><string>/tmp/apple-vision-api.out.log</string>
