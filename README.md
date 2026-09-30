@@ -46,6 +46,32 @@ colorful wall" and got 27 × 43 wrong. If your task needs real visual reasoning,
 use a proper vision model (Qwen-VL, GPT, Gemini, …): this is the cheap fast lane,
 not the deep lane.
 
+## How this differs from apfel
+
+[apfel](https://github.com/Arthur-Ficial/apfel) is the most complete way to use Apple's
+on-device model: a CLI plus an OpenAI-compatible server with tool calling, structured
+output, the Responses API, MCP support, Homebrew install and macOS 26 support.
+**If you only need text, use apfel.**
+
+apple-vision-api exists for one thing apfel's server doesn't do: **image input**.
+apfel's server rejects image content, and its CLI handles images by running Apple's
+Vision framework (OCR and classification) and passing that text to the model. Here, the
+image itself goes to the Foundation Model as an attachment (new in macOS 27), through the
+standard `image_url` field, so the model sees the picture rather than a text description
+of it.
+
+| | apple-vision-api | apfel |
+|---|---|---|
+| Images through the OpenAI API | ✅ the model sees the image | ❌ rejected (400) |
+| Images from the command line | no CLI | Vision OCR + classification, passed as text |
+| Tools, JSON schema, Responses API, MCP | ❌ | ✅ |
+| Streaming, API key | ✅ | ✅ |
+| macOS | 27+ | 26+ |
+| Install | build from source | Homebrew |
+| Size | ~1,150 lines of Swift, no dependencies | full-featured toolkit |
+
+*Comparison as of September 2026; check apfel's README for its current features.*
+
 ## Requirements
 
 - macOS 27 or later
